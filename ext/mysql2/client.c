@@ -218,22 +218,7 @@ static void *nogvl_close(void *ptr) {
   if (wrapper->connected) {
     wrapper->active_thread = Qnil;
     wrapper->connected = 0;
-#ifndef _WIN32
-    /* Invalidate the socket before calling mysql_close(). This prevents
-     * mysql_close() from sending a mysql-QUIT or from calling shutdown() on
-     * the socket. The difference is that invalidate_fd will drop this
-     * process's reference to the socket only, while a QUIT or shutdown()
-     * would render the underlying connection unusable, interrupting other
-     * processes which share this object across a fork().
-     */
-    if (invalidate_fd(wrapper->client->net.fd) == Qfalse) {
-      fprintf(stderr, "[WARN] mysql2 failed to invalidate FD safely, leaking some memory\n");
-      close(wrapper->client->net.fd);
-      return NULL;
-    }
-#endif
-
-    mysql_close(wrapper->client); /* only used to free memory at this point */
+    mysql_close(wrapper->client);
   }
 
   return NULL;
@@ -247,7 +232,24 @@ static void rb_mysql_client_free(void *ptr) {
 void decr_mysql2_client(mysql_client_wrapper *wrapper)
 {
   wrapper->refcount--;
+
   if (wrapper->refcount == 0) {
+#ifndef _WIN32
+    if (wrapper->connected) {
+      /* The client is being garbage collected while connected. Prevent
+       * mysql_close() from sending a mysql-QUIT or from calling shutdown() on
+       * the socket by invalidating it. invalidate_fd() will drop this
+       * process's reference to the socket only, while a QUIT or shutdown()
+       * would render the underlying connection unusable, interrupting other
+       * processes which share this object across a fork().
+       */
+      if (invalidate_fd(wrapper->client->net.fd) == Qfalse) {
+        fprintf(stderr, "[WARN] mysql2 failed to invalidate FD safely\n");
+        close(wrapper->client->net.fd);
+      }
+    }
+#endif
+
     nogvl_close(wrapper);
     xfree(wrapper->client);
     xfree(wrapper);
